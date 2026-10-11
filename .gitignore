@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual env
+.venv/
+
+# Sensitive biometric demo data — never commit real reference photos (CLAUDE.md §15)
+/data/watchlist/*
+!/data/watchlist/.gitkeep
+
+# Match snapshots captured at runtime — never commit
+/data/captures/
+
+# InsightFace model cache (downloaded at runtime)
+/models/

@@ -1,0 +1,7 @@
+pip install -e .
+
+Get-Command sentinel-vision
+Get-Command sentinel-vision-enroll
+
+sentinel-vision-enroll "Abdraman"
+sentinel-vision

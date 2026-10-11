@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sentinel-vision"
+version = "0.1.0"
+description = "Local real-time face detection and watchlist recognition POC."
+requires-python = ">=3.13"
+dependencies = [
+    "opencv-python",
+    "insightface",
+    "onnxruntime",
+    "numpy",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff", "mypy"]
+
+[project.scripts]
+sentinel-vision = "sentinel_vision.bootstrap.main:main"
+sentinel-vision-enroll = "sentinel_vision.bootstrap.enroll:enroll"
+sentinel-vision-probe = "sentinel_vision.bootstrap.distance_probe:probe"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+src = ["src", "tests"]
+line-length = 100
+
+[tool.mypy]
+python_version = "3.13"
+packages = ["sentinel_vision"]
+mypy_path = "src"
+disallow_untyped_defs = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = ["insightface.*"]
+ignore_missing_imports = true
