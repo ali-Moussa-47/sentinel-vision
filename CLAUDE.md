@@ -1,989 +1,370 @@
-# Sentinel Vision --- Constitution d'ingénierie
+# Sentinel Vision — Constitution d'ingénierie
 
-**Statut : document de référence opposable pour le dépôt.**\
-Toute modification de code, test, dépendance, structure ou comportement
-doit respecter ce document. En cas de conflit entre une préférence
-d'agent, un commentaire ponctuel ou une implémentation improvisée et ce
-document, ce document prévaut jusqu'à amendement explicite.
+> **Statut : règles de travail du dépôt pour Claude Code, Codex et tout contributeur.**
+> **Priorités : fiabilité vérifiable, latence réelle, robustesse, crédibilité des résultats, simplicité du code.**
+> **Stack existante : Python 3.13, OpenCV, InsightFace, ONNX Runtime, NumPy.**
+> **Périmètre : démonstration locale et surveillance d'un espace privé contrôlé, sans identification automatique de personnes non consentantes.**
 
-**Projet :** Sentinel Vision\
-**Nature actuelle :** POC local de vision par ordinateur en temps réel,
-destiné à une démonstration avec des personnes volontaires.\
-**Langage :** Python 3.13\
-**Stack initiale autorisée :** OpenCV, InsightFace, ONNX Runtime, NumPy
-et dépendances transitives strictement nécessaires.\
-**Principe directeur :** qualité d'ingénierie élevée, complexité
-minimale.
+## 0. Mode opératoire obligatoire
 
-------------------------------------------------------------------------
+1. Avant toute intervention, lire `CLAUDE.md`, `ARCHITECTURE.md`, `DESIGN_SYSTEM.md`, le handoff disponible et **le code réel**, puis les tests concernés.
+2. Ne jamais supposer qu'une fonction est implémentée parce qu'elle apparaît dans un document ou dans `AppConfig`.
+3. Distinguer systématiquement : **existant et vérifié**, **existant non vérifié**, **proposé**, **hors périmètre**.
+4. **Auditer et proposer avant de coder** si la demande porte sur une architecture, un nouveau moteur IA, un changement de seuil ou une refonte. Ne modifier le dépôt qu'après validation explicite.
+5. Pour une correction autorisée : reproduire le défaut, écrire le test, appliquer le changement minimal, exécuter les tests et mesurer les effets.
+6. Ne jamais affirmer « testé », « plus rapide », « plus fiable », « compatible » ou « prêt pour la production » sans preuve reproductible.
+7. Préserver le fonctionnement actuel ; toute évolution doit être réversible, ciblée et accompagnée de tests de non-régression.
+8. En cas de contradiction entre documents, signaler le conflit et demander une décision ; ne pas le résoudre silencieusement.
 
-## 0. Gouvernance
+**Hiérarchie :** demande explicite de l'utilisateur → présent fichier → `ARCHITECTURE.md` → `DESIGN_SYSTEM.md` pour la présentation → handoff → tests et code observés. Le code et les mesures sont les preuves de l'état exécuté ; les documents expriment l'intention et doivent être corrigés lorsqu'ils sont obsolètes.
 
-Ce document définit les règles de travail de Claude Code, Codex et de
-tout autre agent intervenant sur le dépôt.
+**Documentation :** ne pas réécrire massivement les documents existants. Toute décision architecturale structurante exige une ADR courte (contexte, options, décision, conséquences, preuve). Les changements triviaux n'en exigent pas.
 
-### 0.1 Hiérarchie des sources
+## 1. Vision produit et vérité métier
 
-Ordre d'autorité :
+Sentinel Vision doit devenir un moteur **local, temps réel, explicable et mesurable** capable :
 
-1.  exigences explicites de l'utilisateur ;
-2.  `.claude.md` ;
-3.  `ARCHITECTURE.md` ;
-4.  `DESIGN.md` ;
-5.  `HANDOFF.md` ;
-6.  tests exécutables ;
-7.  code existant ;
-8.  commentaires et préférences d'implémentation.
+- de capter une webcam ou un flux de caméra IP **effectivement accessible** ;
+- de détecter des personnes et véhicules observables dans un espace privé ;
+- de suivre leurs déplacements pendant une séquence vidéo ;
+- de détecter un franchissement de ligne ou une entrée dans une zone définie ;
+- de produire des événements horodatés, sans répétitions injustifiées ;
+- de détecter un visage et, séparément, de proposer une correspondance à une **watchlist volontaire et consentie** ;
+- de continuer à détecter une présence même si le visage est caché, flou, de dos ou inexploitable ;
+- de montrer clairement la disponibilité et les limites de chaque capacité.
 
-Un document inférieur ne peut pas contredire un document supérieur.
+**Trois faits distincts :** `PERSON_DETECTED` ne signifie pas `FACE_DETECTED` ; `FACE_DETECTED` ne signifie pas `IDENTITY_CONFIRMED`. Une similarité faciale n'est pas une probabilité d'identité.
 
-### 0.2 Amendements
+**Contrat de crédibilité :** ne jamais annoncer « intrusion », « identité », « danger », « personne suspecte » ou « conducteur reconnu » sans critère métier explicite et preuve correspondante. Un masque, un turban, un vêtement religieux, une capuche ou une manière de marcher ne prouvent aucune intention. Pour un portail, l'événement factuel est d'abord « franchissement détecté ».
 
-Ne jamais modifier une règle structurante silencieusement.
+**Aucune promesse de détection parfaite.** Nuit, contre-jour, pluie, reflet, occultation, déplacement rapide, faible définition, angle défavorable, vitres teintées et indisponibilité réseau peuvent empêcher l'observation.
 
-Toute décision qui change une frontière, une dépendance majeure, un
-invariant, une stratégie de test ou une règle de ce document doit être
-justifiée par une ADR courte :
+## 2. Non-négociables techniques
 
--   contexte concret ;
--   problème observé ;
--   options réellement considérées ;
--   décision ;
--   conséquences ;
--   date.
+- La **source vidéo** est indépendante du domaine. Le domaine n'importe jamais `cv2`, `numpy`, InsightFace, ONNX Runtime ou une bibliothèque YOLO.
+- Les adaptateurs techniques ne possèdent pas les décisions métier.
+- Le rendu n'infère, ne décide, ne confirme et ne modifie jamais un résultat.
+- Une panne technique est **indisponible/dégradée/erreur**, jamais déguisée en `UNKNOWN`.
+- Une correspondance faciale reste **potentielle**, sauf procédure indépendante explicitement définie ; aucune action défavorable automatique sur sa seule base.
+- Toute confirmation temporelle est liée à **une seule piste physique et à une source donnée**, sans mélange de personnes, de caméras ou de sessions.
+- Chaque événement possède au minimum une source, un type, un horodatage pertinent et un identifiant permettant la déduplication.
+- Les frames obsolètes ne doivent pas être présentées comme du direct. Le temps de capture et le temps de traitement sont distingués.
+- Pas de stockage biométrique, de vidéo permanente, de cloud, de télémétrie ou de capture d'inconnus par défaut. Toute conservation est explicite, limitée et contrôlée.
+- Toute référence biométrique réelle requiert l'accord de la personne concernée et une possibilité de suppression.
+- Une optimisation est refusée si elle dégrade une métrique critique de fiabilité sans arbitrage documenté.
 
-Pas d'ADR pour une décision locale triviale.
+## 3. Principes d'ingénierie
 
-### 0.3 Preuve avant affirmation
+Appliquer **SOLID, SRP, DIP, OCP, Tell Don't Ask, DDD pragmatique, DRY, KISS, YAGNI et TDD** comme outils de réduction du risque, jamais comme décoration.
 
-Un agent ne doit jamais annoncer :
+- **SRP :** acquisition, inférence, suivi, décision, persistance et affichage ont des raisons de changer distinctes.
+- **DIP :** infrastructure → application → domaine. Ports uniquement lorsqu'une frontière externe ou une variation réelle le justifie.
+- **OCP :** pouvoir remplacer le détecteur ou l'analyseur facial sans réécrire les règles métier ; ne pas fabriquer dix interfaces fictives.
+- **TDA :** placer règles et invariants dans les concepts qui les possèdent ; éviter les objets anémiques avec des décisions dispersées.
+- **DRY :** mutualiser la connaissance métier répétée, pas simplement les lignes ressemblantes.
+- **KISS :** privilégier une implémentation courte, déterministe et inspectable.
+- **YAGNI :** pas de microservices, bus, broker, base de données, backend HTTP, GPU, multi-caméras ou pipeline distribué sans besoin et preuve.
+- **DDD :** les bounded contexts suivent les responsabilités métier, pas les packages, bibliothèques ou algorithmes.
+- **TDD :** `RED → GREEN → REFACTOR` pour toute règle métier non triviale ; un test qui passe immédiatement ne démontre pas la nouvelle règle.
 
--   « ça compile » sans l'avoir exécuté ;
--   « les tests passent » sans les avoir exécutés ;
--   « cette dépendance est nécessaire » sans démontrer le besoin ;
--   « cette architecture est meilleure » sans expliquer le problème
-    concret qu'elle résout.
+**Interdits :** god classes ; `utils.py` ou `manager.py` fourre-tout ; héritage artificiel ; `except: pass` ; état global mutable ; I/O depuis le domaine ; configuration cachée ; faux mocks prouvant uniquement leur propre configuration ; refactor massif mélangé à une feature.
 
-Le dépôt réel et les commandes exécutées sont la source de vérité.
+## 4. Frontières et évolution DDD
 
-------------------------------------------------------------------------
+### 4.1 `recognition` — existant, à préserver
 
-# 1. Vision du produit
+Langage actuel : `FaceEmbedding`, `FaceObservation`, `FaceQualityGate`, `Watchlist`, `WatchlistSubject`, `RecognitionPolicy`, `MatchConfirmation`, `RecognitionResult`.
 
-Sentinel Vision est d'abord un **POC local et démontrable**.
+Responsabilité : évaluer la qualité d'une observation faciale, comparer des embeddings à des références consenties, et retourner une décision **prudente et explicable**.
 
-Objectif initial :
+Ne jamais introduire dans ce domaine des concepts tels que portail, véhicule, intrusion, zone, ligne de franchissement ou trajectoire globale.
 
-> Capturer un flux webcam en temps réel, détecter les visages présents
-> et comparer leurs représentations biométriques à une petite watchlist
-> de démonstration constituée de personnes volontaires afin d'afficher
-> `MATCH POTENTIEL` ou `UNKNOWN`.
+### 4.2 Détection visuelle — capacité à ajouter après audit
 
-Le produit doit privilégier :
+Responsabilité envisagée : observer des catégories telles que `person`, `car`, `motorcycle` et leurs rectangles et scores. Un détecteur YOLO est un **adaptateur**, pas une règle métier ni un bounded context à lui seul.
 
--   fluidité du flux vidéo ;
--   simplicité d'installation ;
--   déterminisme ;
--   lisibilité du résultat ;
--   faible latence ;
--   comportement explicable ;
--   faible charge cognitive du code ;
--   capacité à remplacer un composant technique sans contaminer le
-    métier.
+Définir un modèle d'observation agnostique à YOLO uniquement quand le premier cas d'usage est validé. Ne pas recycler `FaceObservation` pour représenter un véhicule.
 
-## 1.1 Hors périmètre actuel
+### 4.3 Suivi et surveillance — responsabilité distincte
 
-Tant qu'un besoin concret ne le justifie pas, ne pas construire :
+Une capacité de monitoring peut gérer piste temporaire, franchissement directionnel, présence, temporisation et déduplication. Ne créer un nouveau bounded context formel que si ses invariants et son cycle de vie le justifient réellement. Sinon commencer avec un module cohérent dans la couche appropriée.
 
--   backend HTTP ;
--   FastAPI ;
--   frontend React ;
--   base de données ;
--   Kafka/RabbitMQ ;
--   Redis ;
--   Docker/Kubernetes ;
--   microservices ;
--   authentification ;
--   cloud ;
--   DeepStream/TensorRT/CUDA ;
--   stockage vidéo permanent ;
--   reconnaissance de plaques ;
--   détection de véhicules ;
--   multi-caméras ;
--   système distribué ;
--   infrastructure de police ;
--   scraping ou collecte de données biométriques ;
--   identification de personnes non consentantes.
+**Architecture conceptuelle, non ordre de créer tous les dossiers :**
 
-Ces capacités ne sont pas « prévues d'avance ». Elles sont **absentes**
-jusqu'à apparition d'un besoin réel.
-
-YAGNI est une contrainte architecturale.
-
-------------------------------------------------------------------------
-
-# 2. Invariants fonctionnels initiaux
-
-Les règles suivantes sont non négociables pour la première version.
-
-1.  La caméra est une source de frames, pas une dépendance du domaine.
-2.  Le domaine ne connaît ni `cv2`, ni InsightFace, ni ONNX Runtime.
-3.  Une identité de démonstration est explicitement enregistrée dans la
-    watchlist locale.
-4.  Une détection sans correspondance suffisante produit `UNKNOWN`.
-5.  Une correspondance n'est jamais présentée comme une certitude
-    absolue.
-6.  Le score brut et le seuil de décision sont deux concepts distincts.
-7.  Le seuil ne doit jamais être abaissé arbitrairement pour « faire
-    marcher la démo ».
-8.  Une frame illisible, un visage trop petit ou une erreur technique ne
-    doit pas être transformé artificiellement en match.
-9.  Une erreur de caméra ou de modèle échoue explicitement ; pas de
-    `except: pass`.
-10. Aucun visage, embedding ou frame n'est persisté par défaut.
-11. Le POC fonctionne localement sans dépendre d'un service cloud.
-12. Les personnes de la watchlist de démonstration doivent être
-    volontaires.
-13. Le moteur de reconnaissance doit être remplaçable sans réécrire le
-    cas d'usage.
-14. Le rendu visuel ne décide jamais du résultat métier ; il ne fait que
-    l'afficher.
-15. Une optimisation ne peut pas changer silencieusement le comportement
-    fonctionnel.
-
-------------------------------------------------------------------------
-
-# 3. Philosophie d'architecture
-
-L'objectif n'est pas d'obtenir « le plus d'architecture possible ».
-
-L'objectif est :
-
-> **le minimum d'architecture capable de protéger les vraies
-> responsabilités du système.**
-
-Les principes SOLID, DDD, TDA, DRY, YAGNI, KISS, SRP, OCP et TDD sont
-des moyens, jamais des objectifs décoratifs.
-
-## 3.1 KISS
-
-Toujours chercher la solution correcte la plus simple.
-
-Avant d'ajouter :
-
--   une interface ;
--   une classe abstraite ;
--   un pattern ;
--   un bus ;
--   un événement ;
--   une factory ;
--   un repository ;
--   un service ;
--   une couche ;
-
-l'agent doit pouvoir répondre :
-
-> Quel problème réel, actuel et vérifiable cette abstraction résout-elle
-> ?
-
-Sans réponse concrète : ne pas l'ajouter.
-
-## 3.2 YAGNI
-
-Ne jamais construire une extension uniquement parce qu'elle « pourrait
-servir plus tard ».
-
-Une extension future doit rester possible grâce à de bonnes frontières,
-pas grâce à du code mort anticipatif.
-
-## 3.3 SRP
-
-Une unité de code possède une seule raison métier ou technique cohérente
-de changer.
-
-Exemples :
-
--   acquisition caméra : acquisition uniquement ;
--   moteur InsightFace : adaptation InsightFace uniquement ;
--   matching : décision de similarité uniquement ;
--   overlay : présentation uniquement ;
--   use case : orchestration uniquement.
-
-Une classe qui capture la caméra, reconnaît, décide, dessine et
-sauvegarde viole SRP.
-
-## 3.4 OCP
-
-OCP signifie ici :
-
-> un changement raisonnablement attendu doit pouvoir être introduit
-> principalement par addition ou remplacement derrière une frontière
-> stable.
-
-Exemple légitime : remplacer InsightFace par un autre moteur sans
-modifier le cas d'usage.
-
-OCP ne justifie pas dix interfaces pour une seule fonction stable.
-
-## 3.5 DIP
-
-Les dépendances pointent vers le cœur.
-
-``` text
-Infrastructure ──────► Application ──────► Domain
-      │
-      └──── implémente les ports définis vers l'intérieur
+```text
+Camera / VideoSource (OpenCV, fichier test, IP si accessible)
+                |
+                v
+      Acquisition horodatée
+                |
+         +------+------+
+         |             |
+         v             v
+  Object detection  Face recognition
+  (YOLO adapter)    (InsightFace adapter)
+         |             |
+         v             v
+  Tracking / rules  Potential match
+         |             |
+         +------+------+
+                v
+      Events / UI / optional retention
 ```
 
-Interdictions :
+Les deux branches ne sont **pas** obligatoirement exécutées sur chaque frame. Une personne de dos et un véhicule peuvent être observés sans lancer l'analyse faciale.
 
--   `domain -> infrastructure`
--   `domain -> cv2`
--   `domain -> insightface`
--   `domain -> onnxruntime`
--   `application -> classe concrète InsightFace`
--   `application -> interface graphique`
+### 4.4 Composition root
 
-## 3.6 Tell, Don't Ask
+Seul `bootstrap` assemble concrètement les implémentations. L'application dépend de contrats nécessaires, pas de classes InsightFace, YOLO, lecteurs caméra ou rendu OpenCV.
 
-Les objets métier doivent protéger leurs propres invariants.
+## 5. Audit obligatoire de l'existant avant extension
 
-Éviter :
+Inspecter **réellement** l'application et ses tests :
 
-``` python
-if match.score >= threshold:
-    match.status = "MATCH"
-```
+- `recognition/application/recognize_frame.py` et le port `face_analyzer.py` ;
+- tracker, association IoU, gestion des pistes perdues et histoires temporelles ;
+- boucle vidéo, horodatage, lecture réseau, reconnexion, traitement et rendu ;
+- `AppConfig`, valeurs effectives, validation et provenance ;
+- `pyproject.toml`, versions, providers ONNX réellement disponibles ;
+- tests unitaires, intégration, fixtures, résultats de benchmarks réels.
 
-Préférer une abstraction métier qui exprime la décision elle-même.
+**Points de vigilance déjà identifiés dans les extraits fournis (à confirmer par audit) :**
 
-Mais ne pas transformer chaque donnée triviale en objet cérémoniel. TDA
-protège un comportement ; il ne sert pas à multiplier les wrappers.
+1. `MatchConfirmation` compte des matches historiques : prouver que cet historique correspond à **une seule piste** et n'autorise pas de réidentification erronée entre plusieurs visages ; vérifier la gestion des fenêtres, absences et resets.
+2. `RecognitionPolicy` n'examine que le meilleur candidat : analyser les cas où les premier et deuxième scores sont presque égaux.
+3. `WatchlistSubject.similarity_to()` prend le maximum des références : mesurer l'effet de l'augmentation du nombre de photos sur les faux positifs.
+4. `FaceQualityGate` ne vérifie que taille et confiance du détecteur : qualité réelle de l'embedding à étudier (flou, pose, éclairage, occlusion) sans coût excessif.
+5. `FaceEmbedding` : vérifier dimension, vecteur nul et contrat de normalisation avant toute optimisation par produit scalaire.
+6. `FaceObservation` : vérifier les invariants même lors de la construction directe, pas seulement par `from_bbox()`.
+7. `LocalWatchlistLoader` : mesurer le coût d'extraction des embeddings au démarrage ; ne mettre en cache qu'avec invalidation/versionnement corrects.
+8. `LocalWatchlistWriter` : éviter d'enregistrer involontairement une référence multi-visages ou inutilisable.
+9. `RecognitionResult` : éviter de mélanger « inconnu », « qualité insuffisante », « ambigu » et « moteur indisponible ».
+10. `render()` : ne pas afficher `SYSTEM READY` quand une capacité requise par le mode actif est défaillante.
 
-## 3.7 DRY
+Ne pas transformer cette liste en refactor automatique. Classer chaque point : **confirmé / infirmé / non vérifiable**, gravité, preuve et test proposé.
 
-DRY concerne la duplication de **connaissance**, pas la simple
-ressemblance syntaxique.
+## 6. Reconnaissance faciale : fiabilité avant taux de match
 
-Deux lignes identiques ne justifient pas automatiquement une
-abstraction.
+### 6.1 Pipeline et qualité
 
-Règle pratique :
+Distinguer systématiquement : détection du visage → mesure qualité → extraction d'embedding → comparaison → politique de décision → confirmation temporelle → présentation.
 
--   première occurrence : écrire simplement ;
--   deuxième : observer ;
--   troisième avec même raison de changer : envisager l'extraction.
+Qualité potentiellement pertinente : surface faciale utile, netteté, mouvement, pose, occlusion, éclairage, confiance du détecteur. Ne pas multiplier les métriques sans démontrer qu'elles améliorent les décisions.
 
-## 3.8 DDD pragmatique
+Le score cosinus est une **mesure de proximité mathématique**, pas « 85 % certain ». Pas de précision artificielle, de badge « verified » ou de décision définitive fondée sur un score seul.
 
-Le projet utilise le vocabulaire métier là où il apporte de la clarté :
+### 6.2 Références multi-photos
 
--   `Watchlist`
--   `WatchlistSubject`
--   `FaceEmbedding`
--   `SimilarityScore`
--   `RecognitionDecision`
--   `PotentialMatch`
+Conserver plusieurs photos **vérifiées et consenties** par sujet, avec variété utile (âge, angle, éclairage, expression, accessoires). Éviter les doublons proches qui ajoutent du coût sans diversité informative.
 
-Ne pas créer artificiellement :
+Comparer les stratégies sur un jeu de validation indépendant : meilleure référence, agrégation robuste, contrôle de qualité, politique d'ambiguïté. Le simple maximum peut accroître le taux de faux matchs à mesure que les références augmentent.
 
--   aggregate root sans invariant ;
--   repository sans persistance ;
--   domain event sans consommateur réel ;
--   bounded context pour chaque dossier.
+Les seuils de matching et de qualité sont des **paramètres calibrés**, pas des chiffres magiques à abaisser pour faire apparaître une correspondance.
 
-DDD sert à maîtriser la complexité métier. Il ne doit pas créer la
-complexité qui n'existe pas.
+### 6.3 Photos anciennes, enfance et évolution d'âge — exigence critique
 
-------------------------------------------------------------------------
+Une photographie d'enfance et un visage adulte peuvent présenter un **écart morphologique majeur**. Aucun modèle, y compris InsightFace, YOLO ou un modèle « age-invariant », ne garantit une correspondance fiable à travers les décennies.
 
-# 4. Bounded Contexts
+**Objectif légitime :** mesurer et améliorer la robustesse dans la limite des preuves, **pas** forcer la reconnaissance d'une personne à partir d'une photo ancienne.
 
-## 4.1 Décision initiale
+Protocole exigé :
 
-**Un seul Bounded Context métier est justifié aujourd'hui :
-`Recognition`.**
+1. Utiliser uniquement des paires de photos de la **même personne volontaire**, datées/âge approximatif documenté quand disponible, ainsi que des imposteurs consentants pour les négatifs.
+2. Regrouper par plages d'écart d'âge et conditions photographiques ; distinguer changement d'âge, dégradation de la photo et échec de détection.
+3. Séparer sujets/prises de vue entre réglage des seuils et évaluation finale ; éviter toute fuite de données entre ensembles.
+4. Mesurer séparément : taux de visages détectés, taux de faux rejets, taux de fausses acceptations, précision des correspondances proposées et couverture des cas évaluables.
+5. Comparer `buffalo_s` et `buffalo_l` **sur le même matériel, avec le même protocole** ; un modèle plus lourd n'est pas automatiquement meilleur sur l'écart d'âge.
+6. Ne considérer restauration, super-résolution ou vieillissement synthétique qu'en **expérimentation isolée** : ces traitements peuvent inventer des caractéristiques biométriques et augmenter les faux matchs.
+7. Ne jamais enrôler automatiquement une photo restaurée/synthétique comme vérité de référence ; conserver la provenance originale.
+8. Si la preuve est insuffisante : retourner `UNKNOWN`, `AMBIGUOUS` ou `INSUFFICIENT_QUALITY` selon la politique validée, puis demander une vérification humaine hors du moteur.
 
-Responsabilité :
+**Une photo ancienne ne doit jamais devenir une preuve d'identité par simple similarité.** Toute affirmation de meilleure performance « age-invariant » doit être étayée sur des écarts d'âge documentés et des négatifs difficiles.
 
-> décider si l'observation faciale issue d'une frame correspond
-> potentiellement à un sujet explicitement présent dans la watchlist de
-> démonstration.
+### 6.4 Confirmation temporelle
 
-La caméra et l'UI sont des préoccupations d'infrastructure, pas des BC.
+La confirmation d'une correspondance requiert une association fiable à une piste donnée, une fenêtre bornée, une règle explicite de gestion des frames manquées et une remise à zéro lors d'un changement de piste ou de caméra.
 
-## 4.2 Condition de création d'un nouveau BC
+Ne pas additionner les matches de plusieurs personnes. Ne pas retenir seulement le score historique maximal pour décrire la certitude actuelle. Les pistes temporaires ne sont pas des identités biométriques.
 
-Un nouveau BC n'est créé que si au moins plusieurs des signaux suivants
-sont présents :
+## 7. Détection et suivi : jardin, portail, marche, course, véhicules
 
--   vocabulaire métier réellement distinct ;
--   invariants propres ;
--   cycle de vie propre ;
--   modèle qui diverge du BC existant ;
--   équipe ou cadence d'évolution indépendante ;
--   frontière d'intégration explicite ;
--   risque réel de collision conceptuelle.
+Le premier objectif du futur module est **l'événement physique observable**, pas l'identité.
 
-« Cela pourrait devenir gros » n'est pas un signal DDD.
+Scénarios à vérifier :
 
-------------------------------------------------------------------------
+- personne marchant, courant, changeant rapidement de direction ;
+- personne masquée, portant turban/capuche/casque, de dos ou visage hors champ ;
+- personne partiellement occultée, accroupie, passant derrière un obstacle ;
+- une et plusieurs personnes, croisements, entrées simultanées, sorties ;
+- voiture, moto, passager non visible, vitres teintées, véhicule stationné ;
+- accès au jardin sans franchissement du portail, selon la règle configurée ;
+- nuit, contre-jour, pluie, compression, faible éclairage, déconnexion et retour du flux.
 
-# 5. Architecture cible minimale
+**Contraintes :** un modèle de détection de personnes ne sait pas nécessairement distinguer les occupants d'une voiture. Détecter une voiture ne permet pas de conclure combien de personnes y sont présentes. Un objet hors champ ou entièrement masqué ne peut pas être détecté à partir d'images qui ne le montrent pas.
 
-Structure initiale recommandée :
+**Tracking :** comparer un tracker simple et, seulement si nécessaire, ByteTrack/BoT-SORT ou équivalent. Mesurer pertes de pistes, changements d'ID, trajectoires fragmentées, faux franchissements et duplications. Un ID de piste est temporaire, pas une identité civile.
 
-``` text
-sentinel-vision/
-├── src/
-│   └── sentinel_vision/
-│       ├── recognition/
-│       │   ├── domain/
-│       │   ├── application/
-│       │   └── infrastructure/
-│       └── bootstrap/
-├── tests/
-│   ├── unit/
-│   └── integration/
-├── data/
-│   └── watchlist/
-├── .gitignore
-├── pyproject.toml
-├── README.md
-├── .claude.md
-├── ARCHITECTURE.md
-├── DESIGN.md
-└── HANDOFF.md
-```
+**Franchissement :** définir géométrie, direction, règle de déclenchement (centre/point d'ancrage/trajectoire), hystérésis anti-oscillation, tolérance aux trous temporels et unicité d'événement. Tester les objets qui restent au voisinage de la ligne.
 
-Ne pas créer tous les fichiers ou sous-dossiers à vide. Ils apparaissent
-lorsqu'un besoin réel existe.
+**Zones :** définir des coordonnées rattachées à la résolution et à l'orientation correctes ; ne pas laisser un redimensionnement invalider silencieusement une zone.
 
-## 5.1 Domain
+## 8. Temps réel : politique de performance fondée sur la mesure
 
-Le domaine contient uniquement :
+### 8.1 Mesures obligatoires
 
--   concepts métier ;
--   invariants ;
--   décisions pures ;
--   types sans dépendance framework.
+Pour chaque configuration et scénario, recueillir si applicable :
 
-Le domaine doit pouvoir être testé sans caméra, sans modèle IA et sans
-filesystem.
+- FPS caméra **reçus**, FPS **analysés** et FPS **affichés** ;
+- latence bout en bout `capture → événement/alerte`, médiane, P95 et P99 ;
+- latence capture/décodage, prétraitement, détection, tracking, analyse faciale, rendu et I/O ;
+- âge de la frame affichée, taille des files, frames abandonnées ;
+- CPU/GPU, mémoire, temps d'initialisation, stabilité sur durée ;
+- rappel des entrées, fausses alertes/heure, alertes dupliquées, pertes et changements d'ID.
 
-## 5.2 Application
+Séparer **débit**, **fraîcheur**, **exactitude**, **continuité** et **résilience**. Ne jamais optimiser les seuls FPS au détriment d'une entrée manquée.
 
-La couche application :
+### 8.2 Architecture du pipeline
 
--   orchestre les cas d'usage ;
--   dépend du domaine ;
--   définit les ports nécessaires à l'extérieur ;
--   ne contient pas de logique OpenCV/InsightFace ;
--   ne dessine rien à l'écran.
+1. Horodater les frames à l'acquisition ; conserver l'identité de la source.
+2. Découpler l'acquisition de l'inférence **seulement si les mesures le nécessitent** ; commencer simple.
+3. Employer des files **bornées** si une concurrence est introduite. Définir explicitement la stratégie en surcharge (dernière frame, perte contrôlée, mode dégradé).
+4. Ne pas supposer qu'un saut de frames est sans conséquence : les traversées rapides peuvent être manquées. Vérifier sur des clips annotés.
+5. Ne pas partager sans contrôle des objets NumPy mutables entre threads ; maîtriser durée de vie des buffers.
+6. Réutiliser le modèle chargé ; éviter les conversions, copies, synchronisations, lectures disque et allocations répétées inutiles.
+7. Ne pas exécuter InsightFace sur toute voiture ou sur toute frame si le besoin ne le justifie pas.
+8. Évaluer les fournisseurs ONNX réellement présents et leurs performances **après** benchmark ; pas de présomption CPU/GPU.
+9. Limiter les logs par frame ; instrumenter sans perturber de manière significative la latence mesurée.
+10. Si le live perd sa fraîcheur, afficher `DEGRADED`/`STALE`, pas `LIVE`.
 
-## 5.3 Infrastructure
+### 8.3 Objectifs de performance
 
-La couche infrastructure contient les adapters :
+Ne fixer **aucun FPS, taux de détection ou délai garanti** sans matériel cible et corpus de référence. Formuler des **budgets mesurables** avant l'implémentation, et enregistrer les résultats obtenus. Pour les scénarios rapides, mesurer le taux d'événements manqués, pas seulement la fluidité.
 
--   webcam OpenCV ;
--   moteur InsightFace ;
--   chargement local de watchlist ;
--   overlay OpenCV ;
--   configuration technique.
+Toute optimisation exige : baseline, hypothèse, changement minimal, profilage comparable avant/après, non-régression fonctionnelle et possibilité de retour arrière.
 
-Les frameworks restent ici.
+## 9. Sources vidéo et modes dégradés
 
-## 5.4 Bootstrap
+- Webcam, fichier vidéo de test et flux IP sont des **adaptateurs de source**, pas des règles du domaine.
+- Une adresse IP découverte ou un ping réussi **ne prouvent pas** qu'un flux RTSP/ONVIF est disponible ; ne pas inventer une URL de streaming UBOX.
+- Prévoir échec d'ouverture, `read()` faux, frame vide, timeout, coupure, reconnexion, doublons et reprise.
+- Toujours relâcher proprement capture vidéo, workers et fenêtres.
+- Ne pas déclarer un événement sur une frame périmée après reconnexion.
+- Si le moteur facial échoue mais la détection de personnes fonctionne, afficher les **capacités disponibles séparément** ; l'inverse aussi.
+- Tester la transition des états `STARTING`, `READY`, `DEGRADED`, `ERROR`, `RECOVERING` sans présenter un échec comme un résultat négatif.
 
-Le bootstrap est le **composition root**.
+## 10. Validation expérimentale et tests
 
-Il peut connaître les implémentations concrètes et les assembler.
+### 10.1 Tests unitaires (rapides et déterministes)
 
-Aucune logique métier dans `main.py`.
+Invariants de bbox, embeddings, similarité, scores limites, tri des candidats, égalité/ambiguïté, qualité, matching, confirmations, association aux pistes, reset, entrée/sortie, déduplication et erreurs de configuration.
 
-------------------------------------------------------------------------
+Aucune webcam, réseau, téléchargement de modèles, attente arbitraire ou vrai visage obligatoire dans les tests unitaires.
 
-# 6. Politique de dépendances
+### 10.2 Tests d'intégration
 
-Une dépendance externe est un coût.
+Chargement de références, erreur de modèle, compatibilité InsightFace/ONNX, caméra simulée ou fichier vidéo, cohérence d'horodatage, reprise après panne, qualité des résultats d'adapters.
 
-Avant tout `pip install`, vérifier :
+Tests matériels et lourds isolés ; aucun téléchargement implicite pendant la suite rapide.
 
-1.  le besoin est réel ;
-2.  la bibliothèque n'est pas déjà couverte par une dépendance présente
-    ;
-3.  elle est maintenue ;
-4.  son rôle est précis ;
-5.  elle ne force pas une architecture disproportionnée.
+### 10.3 Corpus vidéo reproductible
 
-Dépendances initiales acceptées :
+Constituer avec autorisation un corpus privé de scénarios annotés : marche, course, deux personnes, masque/turban, nuit, véhicule, occlusions, traversée aller/retour, perte du flux. Ajouter des négatifs difficiles : ombres, arbres en mouvement, animaux, véhicules qui passent sans entrer, personnes restant à l'extérieur.
 
--   `opencv-python`
--   `insightface`
--   `onnxruntime`
+Chaque clip doit définir la vérité terrain : source, début/fin, type d'objet, entrée/sortie et événements attendus. Pour la comparaison faciale, distinguer les vérités terrain d'identité des résultats du modèle.
 
-Les dépendances transitives ne deviennent pas automatiquement des APIs
-autorisées du projet.
+Mesurer par scénario et globalement : rappel des événements, faux positifs, latence P95, duplications, continuité des pistes et taux d'indisponibilité. Rendre visibles les faibles performances, ne pas les masquer derrière une moyenne.
 
-Ne pas importer une dépendance transitive directement sans décision
-explicite.
+### 10.4 Expériences sur photos anciennes
 
-------------------------------------------------------------------------
+Tests isolés avec paires consenties, références contemporaines vs anciennes, imposteurs ressemblants, variations de qualité et écarts d'âge. Rapporter la taille des échantillons et les intervalles d'incertitude lorsqu'ils sont calculables ; aucun pourcentage spectaculaire sur deux photos.
 
-# 7. TDD --- discipline obligatoire
+### 10.5 Règle de non-régression
 
-Pour tout comportement métier non trivial :
+Un changement de modèle, seuil, résolution, tracker ou fréquence d'inférence doit relancer les tests appropriés **et** le benchmark des scénarios critiques. Documenter explicitement toute régression et son arbitrage.
 
-``` text
-RED → GREEN → REFACTOR
-```
+## 11. Données, sécurité et éthique
 
-## 7.1 RED
+- Traiter images, embeddings et captures comme des données sensibles.
+- Utiliser seulement des références consenties pour la comparaison d'identité ; pas de scraping, recherche dans des bases externes ou enrichissement biométrique caché.
+- Ne pas suivre une personne entre plusieurs caméras par biométrie sans objectif, base et consentement appropriés.
+- Éviter l'enregistrement continu et la conservation des inconnus par défaut.
+- Lorsque la capture est activée : dossier protégé, politique d'expiration, suppression, contrôle d'accès, exclusion Git et minimum nécessaire.
+- Protéger les URL de caméra et leurs identifiants : jamais de secret dans les logs, screenshots, tests ou documentation.
+- Préférer des alertes factuelles réversibles avec confirmation humaine à des décisions automatiques sur une identité incertaine.
+- Surveiller son espace privé en respectant les règles applicables et la vie privée des personnes filmées.
 
-Écrire d'abord un test qui exprime le comportement attendu et vérifier
-qu'il échoue pour la bonne raison.
+## 12. Interface : crédibilité perceptuelle
 
-Un test qui passe immédiatement ne prouve pas le nouveau comportement.
+`DESIGN_SYSTEM.md` demeure la référence pour les tokens, états, typographie, couleur, espacements et mouvement.
 
-## 7.2 GREEN
+- **Vidéo dominante**, interface dark premium, style MUI discipliné, faible charge cognitive.
+- Overlays sobres : bbox stable, label court, informations techniques secondaires.
+- Afficher séparément caméra, détection d'objet, suivi et reconnaissance ; éviter un unique voyant vert trompeur.
+- Utiliser `POTENTIAL MATCH`, `UNKNOWN`, `INSUFFICIENT QUALITY`, `AMBIGUOUS`, `UNAVAILABLE` selon la politique réellement implémentée ; ne pas simuler un état non pris en charge.
+- Afficher la **similarité**, jamais « % certain » ; ne pas déguiser le score en probabilité.
+- Ne pas superposer de faux graphiques, FPS inventés, fausses télémétries, effets « sci-fi », clignotements ou animations coûteuses.
+- Le rendu n'a jamais le droit de devancer la décision du moteur ni de masquer un flux périmé.
 
-Écrire le minimum de code correct pour faire passer le test.
+## 13. Configuration et qualité Python
 
-Pas de refactor opportuniste massif pendant GREEN.
+- Python typé ; noms intentionnels ; fonctions cohérentes et effets de bord visibles.
+- `AppConfig` reste une configuration technique, pas un fourre-tout de politiques métier ; extraire seulement lorsqu'une vraie pression de complexité le justifie.
+- Valider les seuils, tailles, dimensions, chemins, temporisations, URL et combinaisons incompatibles à l'entrée.
+- Erreurs explicites à la bonne frontière, diagnostic contextualisé et contrôlé ; jamais `except Exception: pass`.
+- Ne pas ajouter de dépendance sans vérifier maintenance, licence (notamment modèles/datasets YOLO et InsightFace), compatibilité Python, coût de distribution et réel bénéfice.
+- Ne pas inventer une licence commerciale autorisée pour un modèle pré-entraîné ; vérifier avant redistribution ou usage commercial.
+- Favoriser la composition ; tests de comportement ; zéro optimisation non mesurée.
 
-## 7.3 REFACTOR
+## 14. Plan de livraison par preuves, pas par promesses
 
-Améliorer le design seulement lorsque la suite est verte.
+**M0 — Audit et baseline.** Cartographier le flux actuel, confirmer les risques du code, exécuter la suite de tests, relever FPS/latence/erreurs. **Aucune refonte** pendant cet audit.
 
-Après refactor :
+**M1 — Fiabiliser la reconnaissance existante.** Invariants, qualité, confirmations par piste, cas ambigus, références fiables. Valider que les changements ne dégradent pas l'usage actuel.
 
--   relancer les tests concernés ;
--   relancer la suite complète avant de conclure.
+**M2 — Évaluer les photos anciennes.** Corpus consenti, écart d'âge, vrais négatifs, comparaison de modèles, calibration et compte rendu de limites. Ne pas promettre une identification à travers les décennies.
 
-## 7.4 Priorité des tests
+**M3 — Détection non biométrique.** Intégrer un détecteur de personnes/véhicules derrière un adaptateur minimal, sur vidéos de test avant la caméra IP réelle.
 
-Prioriser :
+**M4 — Tracking et événements.** Franchissement directionnel, zones, déduplication, passages rapides, occlusion, erreur de piste ; tests déterministes puis vidéos annotées.
 
-1.  invariants et décision de matching ;
-2.  erreurs et frontières ;
-3.  orchestration des use cases ;
-4.  adapters critiques ;
-5.  intégration caméra/modèle ;
-6.  présentation.
+**M5 — Performance et résilience.** Profiler bout en bout, réduire latence et frames périmées, tester coupures réseau, surcharge, durée de fonctionnement et récupération.
 
-Ne pas chercher 100 % de couverture pour flatter une métrique.
+**M6 — UX et exploitation.** États honnêtes, alertes factuelles, captures explicites, diagnostics et finition selon le Design System.
 
-Chercher 100 % de confiance sur les règles critiques.
+Une milestone est complète uniquement si ses critères de validation, tests et mesures sont documentés. Ne pas commencer tout M0–M6 en une seule PR.
 
-------------------------------------------------------------------------
+## 15. Compte rendu attendu de Claude Code
 
-# 8. Propriétés des tests
+À chaque intervention substantielle, répondre en français avec :
 
-Les tests doivent tendre vers FIRST :
+1. **Constat :** ce qui existe réellement, fichiers examinés, comportement reproduit.
+2. **Risque :** impact concret, gravité, cas limite et preuve.
+3. **Décision :** changement minimal choisi et alternatives écartées.
+4. **Tests :** commandes réellement lancées, résultat, limites de couverture.
+5. **Performance :** baseline et après, matériel/protocole, ou « non mesurée ».
+6. **Diff :** fichiers changés, justification, absence de changements hors périmètre.
+7. **Limites :** inconnues, risques résiduels, conditions non vérifiées.
+8. **Prochaine étape :** une action prioritaire clairement justifiée.
 
--   **Fast**
--   **Independent**
--   **Repeatable**
--   **Self-validating**
--   **Timely**
+Si la demande est une **revue** ou une **discussion**, fournir l'analyse et les options **sans modifier aucun fichier**.
 
-Et A-TRIP :
+## 16. Definition of Done
 
--   **Automatic**
--   **Thorough**
--   **Repeatable**
--   **Independent**
--   **Professional**
+Une évolution n'est « terminée » que si :
 
-Interdictions :
+- le comportement demandé fonctionne dans son périmètre annoncé ;
+- le comportement préexistant critique reste valide ;
+- les invariants métier et les frontières architecturales sont respectés ;
+- les tests ciblés puis la suite pertinente ont réellement été exécutés ;
+- les scénarios négatifs et dégradés significatifs sont couverts ;
+- les résultats sensibles ne prétendent pas à plus de certitude que les données ;
+- les mesures de performance nécessaires existent et la latence n'est pas dissimulée ;
+- les données et secrets sont protégés ;
+- la documentation et le handoff reflètent les changements effectifs ;
+- aucun code spéculatif, abstraction gratuite ou régression cachée ne subsiste.
 
--   dépendre d'un ordre d'exécution ;
--   dépendre de la webcam dans un test unitaire ;
--   télécharger un modèle dans un test unitaire ;
--   `sleep()` pour synchroniser un test si une condition déterministe
-    est possible ;
--   tester une méthode privée directement ;
--   mocker le domaine pur ;
--   tester seulement que « ça ne plante pas ».
+---
 
-------------------------------------------------------------------------
-
-# 9. Stratégie de tests
-
-## 9.1 Unit tests
-
-Domaine et application purs.
-
-Ils doivent être très rapides.
-
-## 9.2 Integration tests
-
-Pour :
-
--   adapter InsightFace ;
--   chargement de watchlist ;
--   acquisition caméra si l'environnement le permet ;
--   compatibilité modèle/runtime.
-
-Les tests nécessitant matériel ou modèle lourd doivent être clairement
-séparés de la suite unitaire.
-
-## 9.3 Characterization tests
-
-Avant de corriger un comportement existant mal compris :
-
-1.  reproduire ;
-2.  écrire un test qui capture le comportement ;
-3.  confirmer le défaut ;
-4.  corriger ;
-5.  prouver la non-régression.
-
-------------------------------------------------------------------------
-
-# 10. Qualité Python
-
-## 10.1 Typage
-
-Le code applicatif et domaine doit être typé.
-
-Éviter `Any` sauf frontière technique réellement dynamique et justifiée.
-
-## 10.2 Nommage
-
-Le nom doit révéler l'intention.
-
-Préférer :
-
-``` text
-RecognitionDecision
-SimilarityScore
-WatchlistSubject
-recognize_observation()
-```
-
-Éviter :
-
-``` text
-Manager
-Helper
-Utils
-Processor
-Data
-Common
-do_stuff()
-handle()
-```
-
-sauf si le terme exprime réellement le rôle.
-
-## 10.3 Fonctions
-
-Une fonction :
-
--   fait une chose cohérente ;
--   reste courte par nécessité conceptuelle, pas par quota arbitraire ;
--   évite les booléens qui changent complètement son comportement ;
--   évite les effets de bord cachés.
-
-## 10.4 Exceptions
-
-Pas de :
-
-``` python
-except Exception:
-    pass
-```
-
-Une exception doit être :
-
--   traitée ;
--   traduite à une frontière ;
--   ou propagée explicitement.
-
-Ne jamais transformer une panne technique en `UNKNOWN` si cela
-masquerait l'erreur.
-
-## 10.5 État global
-
-Pas d'état global mutable.
-
-Les dépendances sont construites au composition root et injectées
-explicitement.
-
-## 10.6 Configuration
-
-Les valeurs techniques configurables ne sont pas dispersées dans le
-code.
-
-Le seuil de matching, l'index caméra ou le chemin de watchlist doivent
-avoir une source de configuration claire lorsqu'ils deviennent
-configurables.
-
-Ne pas introduire un framework de configuration tant que quelques
-constantes explicites suffisent.
-
-------------------------------------------------------------------------
-
-# 11. Faible charge cognitive
-
-La qualité principale recherchée est la **compréhensibilité**.
-
-Un développeur doit pouvoir suivre un flux sans ouvrir quinze fichiers.
-
-Règles :
-
--   profondeur d'imbrication faible ;
--   early return lorsqu'il clarifie ;
--   noms explicites ;
--   pas de magie ;
--   pas de métaprogrammation sans nécessité ;
--   pas d'héritage pour partager trois lignes ;
--   composition préférée à l'héritage ;
--   dépendances visibles ;
--   comportement local prévisible ;
--   abstractions peu nombreuses et fortes.
-
-Une architecture « propre » qui exige de traverser huit interfaces pour
-comprendre un POC est une mauvaise architecture.
-
-------------------------------------------------------------------------
-
-# 12. Performance
-
-La performance est importante parce que le traitement est temps réel,
-mais l'optimisation doit être mesurée.
-
-Ordre :
-
-1.  code correct ;
-2.  mesure ;
-3.  identification du goulot ;
-4.  optimisation ciblée ;
-5.  nouvelle mesure ;
-6.  test de non-régression.
-
-Ne jamais optimiser sur intuition seule.
-
-Métriques futures possibles lorsqu'elles deviennent utiles :
-
--   FPS ;
--   latence moyenne par frame ;
--   latence P95 ;
--   temps d'inférence ;
--   consommation mémoire ;
--   nombre de visages traités.
-
-Pas de TensorRT/CUDA/threads complexes avant preuve que le chemin simple
-est insuffisant.
-
-------------------------------------------------------------------------
-
-# 13. Règles spécifiques au traitement vidéo
-
-1.  Ne pas coupler la boucle caméra au moteur métier.
-2.  Toujours libérer la caméra proprement.
-3.  Toujours fermer les fenêtres OpenCV proprement.
-4.  Ne pas supposer que `read()` réussit.
-5.  Une frame est une donnée éphémère.
-6.  Ne pas copier les frames inutilement.
-7.  Ne pas effectuer de conversion de format multiple sans nécessité.
-8.  Toute optimisation de frame skipping doit être mesurée.
-9.  Le rendu overlay ne doit pas ralentir silencieusement la
-    reconnaissance sans mesure.
-10. La résolution et le framerate doivent être explicites lorsqu'ils
-    deviennent contractuels.
-
-------------------------------------------------------------------------
-
-# 14. Règles spécifiques à la reconnaissance
-
-Le système de démonstration doit distinguer :
-
--   détection d'un visage ;
--   extraction d'un embedding ;
--   calcul de similarité ;
--   décision de matching ;
--   présentation du résultat.
-
-Ne jamais fusionner ces concepts dans une unique fonction « recognize ».
-
-Le domaine ne doit pas connaître la structure interne du modèle
-InsightFace.
-
-Un embedding est traité comme une représentation mathématique opaque
-fournie par un port technique.
-
-Les décisions doivent rester déterministes pour les mêmes entrées et la
-même configuration.
-
-------------------------------------------------------------------------
-
-# 15. Données et confidentialité du POC
-
-Le projet actuel est une démonstration locale avec consentement.
-
-Par défaut :
-
--   pas d'envoi cloud ;
--   pas de télémétrie ;
--   pas de stockage permanent des frames ;
--   pas de stockage automatique des inconnus ;
--   pas de collecte silencieuse ;
--   pas de base biométrique externe.
-
-Le dossier `data/watchlist/` ne doit pas être commité avec de vraies
-photos.
-
-Ajouter les données locales sensibles au `.gitignore`.
-
-Les tests utilisent des fixtures synthétiques ou explicitement
-autorisées.
-
-------------------------------------------------------------------------
-
-# 16. Git et discipline de changement
-
-Chaque changement doit être :
-
--   petit ;
--   cohérent ;
--   testable ;
--   réversible ;
--   limité au besoin demandé.
-
-Avant modification :
-
-1.  lire les fichiers concernés ;
-2.  comprendre le comportement actuel ;
-3.  identifier les tests existants ;
-4.  déterminer la plus petite surface de changement.
-
-Après modification :
-
-1.  exécuter les tests ciblés ;
-2.  exécuter la suite pertinente ;
-3.  inspecter le diff ;
-4.  supprimer code mort/imports inutiles ;
-5.  vérifier qu'aucune abstraction spéculative n'a été introduite ;
-6.  mettre à jour la documentation uniquement si le comportement ou
-    l'architecture ont réellement changé.
-
-Ne jamais mélanger une feature et un refactor massif sans nécessité.
-
-------------------------------------------------------------------------
-
-# 17. Politique pour Claude Code et Codex
-
-## 17.1 Avant de coder
-
-L'agent doit :
-
-1.  lire `.claude.md` ;
-2.  lire les documents directement concernés ;
-3.  inspecter le code réel ;
-4.  inspecter les tests ;
-5.  reformuler intérieurement le besoin ;
-6.  rechercher la solution minimale compatible avec les invariants.
-
-Ne pas inventer l'état du dépôt.
-
-## 17.2 Pendant le codage
-
-L'agent doit :
-
--   respecter les frontières ;
--   écrire le test avant le comportement métier ;
--   garder le diff minimal ;
--   éviter les changements non demandés ;
--   arrêter une abstraction dès qu'elle devient spéculative ;
--   préférer une fonction claire à un pattern inutile.
-
-## 17.3 Après le codage
-
-L'agent doit effectuer une auto-revue adversariale :
-
--   qu'ai-je cassé ?
--   quelle entrée limite ai-je oubliée ?
--   ai-je introduit une duplication de connaissance ?
--   ai-je violé SRP ?
--   ai-je importé un framework vers le cœur ?
--   ai-je créé une abstraction sans variation réelle ?
--   le test vérifie-t-il réellement ce qu'il prétend ?
--   ai-je exécuté les commandes que j'affirme vertes ?
-
-Puis seulement produire le compte rendu.
-
-------------------------------------------------------------------------
-
-# 18. Patterns de conception
-
-Aucun pattern n'est obligatoire.
-
-Un pattern est accepté uniquement lorsqu'une variation réelle le
-justifie.
-
-Exemples potentiellement légitimes, **uniquement si le besoin apparaît**
-:
-
--   Strategy : plusieurs politiques de matching réellement coexistantes
-    ;
--   Adapter : encapsuler InsightFace/OpenCV ;
--   Factory : construction réellement variable/complexe ;
--   Observer : plusieurs consommateurs réels d'un événement.
-
-Interdit :
-
-> « ajoutons Strategy/Factory/EventBus au cas où ».
-
-Le pattern le plus simple est souvent l'absence de pattern.
-
-------------------------------------------------------------------------
-
-# 19. Anti-patterns interdits
-
--   God class.
--   `utils.py` fourre-tout.
--   `manager.py` sans responsabilité précise.
--   logique métier dans `main.py`.
--   logique métier dans l'overlay.
--   import InsightFace dans le domaine.
--   accès filesystem depuis le domaine.
--   dépendance circulaire.
--   héritage artificiel.
--   interface avec une seule implémentation sans frontière ou variation
-    justifiable.
--   repository sans persistance.
--   event bus sans consommateur.
--   exception avalée.
--   valeur magique dupliquée.
--   configuration cachée.
--   mock de tout.
--   test qui teste l'implémentation plutôt que le comportement.
--   optimisation non mesurée.
--   commentaires qui compensent un mauvais nommage.
--   `TODO` utilisé pour accepter une violation d'invariant.
--   code « future proof » sans besoin actuel.
-
-------------------------------------------------------------------------
-
-# 20. Definition of Done
-
-Une tâche n'est terminée que si les points applicables sont vrais :
-
-### Comportement
-
--   besoin demandé implémenté ;
--   cas nominal vérifié ;
--   cas d'erreur pertinents vérifiés ;
--   aucun comportement hors scope ajouté.
-
-### Architecture
-
--   Dependency Rule respectée ;
--   SRP respecté ;
--   pas de nouveau couplage injustifié ;
--   pas d'abstraction spéculative ;
--   BC respecté.
-
-### Tests
-
--   RED observé pour une nouvelle règle métier ;
--   GREEN obtenu ;
--   tests ciblés verts ;
--   suite pertinente verte ;
--   aucun test désactivé pour obtenir du vert.
-
-### Code
-
--   typage cohérent ;
--   noms intentionnels ;
--   pas de duplication de connaissance évitable ;
--   pas de dead code ;
--   pas d'import inutile ;
--   exceptions explicites ;
--   complexité cognitive raisonnable.
-
-### Documentation
-
--   documentation mise à jour seulement si nécessaire ;
--   `HANDOFF.md` mis à jour à la fin d'une session substantielle ;
--   ADR ajoutée si et seulement si une décision architecturale durable a
-    réellement changé.
-
-------------------------------------------------------------------------
-
-# 21. Critères de succès de la première milestone
-
-La première milestone n'est pas « une plateforme de surveillance ».
-
-Elle est réussie lorsque :
-
-1.  le projet démarre par une commande documentée ;
-2.  la webcam s'ouvre et se ferme proprement ;
-3.  un visage peut être détecté en direct ;
-4.  une petite watchlist locale peut être chargée ;
-5.  une observation peut être comparée à cette watchlist ;
-6.  `UNKNOWN` et `MATCH POTENTIEL` sont distingués proprement ;
-7.  le résultat est affiché sans mélanger présentation et décision ;
-8.  le flux reste suffisamment fluide pour une démonstration ;
-9.  les règles de décision sont couvertes par tests ;
-10. le cœur métier peut être exécuté sans caméra et sans InsightFace.
-
-Tout le reste attend un besoin réel.
-
-------------------------------------------------------------------------
-
-# 22. Ordre de construction
-
-Ordre obligatoire tant qu'aucun fait nouveau ne le remet en cause :
-
-``` text
-M0 — Toolchain propre
-     pyproject.toml / tests / lint-type-check minimal
-
-M1 — Camera acquisition
-     ouvrir, lire, fermer proprement
-
-M2 — Face detection
-     détecter sans reconnaître
-
-M3 — Watchlist loading
-     charger des sujets de démonstration
-
-M4 — Embedding extraction
-     produire les représentations
-
-M5 — Recognition decision
-     similarité + seuil + UNKNOWN/MATCH POTENTIEL
-
-M6 — Live composition
-     brancher caméra + moteur + décision
-
-M7 — Presentation
-     overlay lisible et faible charge cognitive
-
-M8 — Measurement
-     FPS / latence seulement lorsque le flux complet existe
-
-M9 — Optimization
-     uniquement sur goulot mesuré
-```
-
-Ne pas sauter directement à M9.
-
-------------------------------------------------------------------------
-
-# 23. Règle finale
-
-À chaque décision, appliquer cette séquence :
-
-> **Besoin réel → invariant → test → solution la plus simple → mesure →
-> refactor éventuel.**
-
-Pas :
-
-> framework → pattern → abstraction → problème à chercher.
-
-Sentinel Vision doit rester un projet que l'on peut expliquer
-rapidement, tester facilement, modifier sans peur et optimiser
-uniquement lorsque les mesures le demandent.
+> **Règle finale :** une détection crédible vaut mieux qu'une identification forcée ; une alerte mesurée vaut mieux qu'un compteur FPS flatteur ; une architecture simple et prouvée vaut mieux qu'une architecture impressionnante mais non testée.
+>
+> **Méthode : besoin réel → invariants → test → implémentation minimale → mesure → validation contradictoire → amélioration ciblée.**
