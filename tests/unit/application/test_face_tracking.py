@@ -66,3 +66,17 @@ def test_reset_clears_confirmation_history() -> None:
         tracker.update([_face(_match())])
     tracker.reset()
     assert tracker.update([_face(_match())])[0].result.decision is not Decision.POTENTIAL_MATCH
+
+
+def test_display_box_follows_detection_exactly_without_smoothing() -> None:
+    tracker = _tracker()
+    tracker.update([_face(_UNKNOWN, FaceObservation(0, 0, 100, 100, 0.9))])
+    [moved] = tracker.update([_face(_UNKNOWN, FaceObservation(20, 0, 120, 100, 0.9))])
+    assert (moved.observation.x1, moved.observation.x2) == (20, 120)
+
+
+def test_display_box_glides_halfway_toward_the_new_detection() -> None:
+    tracker = FaceTracker(MatchConfirmation(3), 5, 0.3, 2, box_smoothing=0.5)
+    tracker.update([_face(_UNKNOWN, FaceObservation(0, 0, 100, 100, 0.9))])
+    [moved] = tracker.update([_face(_UNKNOWN, FaceObservation(20, 0, 120, 100, 0.9))])
+    assert (moved.observation.x1, moved.observation.x2) == (10, 110)

@@ -36,4 +36,11 @@ def build_mime(message: EmailMessage, sender: str) -> MimeEmailMessage:
     mime["To"] = message.recipient.value
     mime["Subject"] = message.subject
     mime.set_content(message.body)
+    for attachment in message.attachments:
+        mime.add_attachment(
+            attachment.content,
+            maintype=attachment.maintype,
+            subtype=attachment.subtype,
+            filename=attachment.filename,
+        )
     return mime

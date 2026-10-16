@@ -27,9 +27,11 @@ def render(
     watchlist_size: int,
     camera_label: str,
     provider_label: str,
+    object_status: str | None = None,
 ) -> None:
     subjects = f"{watchlist_size} SUBJECT" + ("S" if watchlist_size != 1 else "")
-    tail = f"{subjects}    {fps:4.1f} FPS    CAM {camera_label}    {provider_label}"
+    detect = f"{object_status}    " if object_status is not None else ""
+    tail = f"{detect}{subjects}    {fps:4.1f} FPS    CAM {camera_label}    {provider_label}"
 
     if not outcome.recognition_available:
         _draw_status_bar(frame, _WARNING, "RECOGNITION UNAVAILABLE", tail)

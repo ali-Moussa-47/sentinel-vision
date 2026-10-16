@@ -16,11 +16,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff", "mypy"]
+plates = ["fast-alpr"]
 
 [project.scripts]
 sentinel-vision = "sentinel_vision.bootstrap.main:main"
 sentinel-vision-enroll = "sentinel_vision.bootstrap.enroll:enroll"
 sentinel-vision-probe = "sentinel_vision.bootstrap.distance_probe:probe"
+sentinel-vision-detect = "sentinel_vision.bootstrap.object_probe:probe"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -41,5 +43,5 @@ disallow_untyped_defs = true
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
-module = ["insightface.*"]
+module = ["insightface.*", "onnxruntime.*", "fast_alpr.*"]
 ignore_missing_imports = true

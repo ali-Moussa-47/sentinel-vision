@@ -1547,6 +1547,345 @@ Hors scope (volontaire): retry durable d'email (best-effort ; snapshot = preuve
 durable), piece jointe, autres canaux (Telegram/webhook = nouvel adapter + sink),
 espace public.
 
+## 2026-10-14 — M11 Detection d'objets (YOLOX ONNX, Apache-2.0)
+
+Goal:
+- Debloquer la branche non biometrique : detecter personnes/vehicules derriere
+  un adaptateur, sans recycler `recognition`, sur modele licence-propre.
+
+Changes:
+- Nouveau module `detection` : `domain/detected_object.py` (VO pur, invariants),
+  `application/object_detector.py` (Port + `ObjectDetectionError`),
+  `infrastructure/yolox_postprocess.py` (pur : make_grid/decode/nms),
+  `infrastructure/yolox_onnx_detector.py` (adapter letterbox+ORT+NMS+rescale+allow-list).
+- `bootstrap/object_probe.py` + script `sentinel-vision-detect` (apercu visuel).
+- Config : `detection_enabled` (False), `detection_model_path` (yolox_nano),
+  `detection_score_threshold` (0.3), `detection_nms_threshold` (0.45) + validation.
+- `pyproject` : mypy override `onnxruntime.*` ; modeles dans `/models/` (gitignore).
+- ADR-009.
+
+Decisions:
+- YOLOX Apache-2.0 (commercial + redistribution OK, LICENSE verifiee). Defaut
+  `yolox_nano` (latence) ; `yolox_tiny` pour plus de rappel.
+- Module coherent, PAS de BC formel (gate ARCHITECTURE §3.3 non franchi).
+- Detection desactivee par defaut ; pas encore cablee dans la boucle live (M12),
+  pas de tracking/zones (M4). Fait physique seulement, aucune identite/intrusion.
+
+Validation:
+- 139 tests OK, ruff clean, mypy clean (55 fichiers).
+- Baseline CPU i7-1355U : nano 13.8ms / tiny 26.6ms (frame 416²).
+- End-to-end image 1080×810 seuil 0.3 : nano (41ms) bus 0.91 + 3 person ;
+  tiny (51ms) bus 0.95 + 3 person. Mapping/allow-list/rescale corrects.
+
+Remaining:
+- M12 : cabler la detection dans la boucle live + overlay honnete (capacites
+  separees). M4 : tracking objets, zones, franchissement directionnel.
+- Precision non evaluee sur corpus annote (clips consentis requis).
+
+## 2026-10-14 — M12 Cablage live de la detection (capacites separees)
+
+Goal:
+- Integrer la detection d'objets dans la boucle principale, en affichant les
+  capacites separement (pas un unique voyant vert trompeur, §9/§12).
+
+Changes:
+- `main.py` : `_initialize_detector` (opt-in, degrade proprement si modele
+  absent/echec), boucle `_detect` + `object_overlay.draw` + `_object_status`,
+  flag CLI `--detect`. Detection independante de la reco (branches §4.3).
+- Boxes objets dessinees APRES `alerter.process` → le snapshot-preuve reste
+  propre (sans overlay).
+- `overlay.render` : parametre optionnel `object_status` (chaine, aucun couplage
+  BC) ajoute au bandeau ; present aussi quand la reco est UNAVAILABLE.
+- `detection/infrastructure/presentation/object_overlay.py` : rendu des boxes
+  (personne/vehicule), partage par `main` et `object_probe` (DRY).
+
+Decisions:
+- Statut detection = mots explicites : absent si desactive, `DETECT n` si actif,
+  `DETECT UNAVAILABLE` si init echoue ou erreur en flux. Jamais masque en reco.
+- Detection + visage sur CHAQUE frame pour ce premier cablage (simple, correct) ;
+  plafond perf a revisiter par mesure (skip/intervalle) — non premature.
+
+Validation:
+- 143 tests OK (dont `_object_status` : 4 etats honnetes), ruff + mypy clean (57).
+- Smoke live-path headless (image reelle) : detecteur construit, 4 objets,
+  statut `DETECT 4`, frame annotee. Snapshot non pollue (boxes apres alerter).
+- Usage : `sentinel-vision --detect` (webcam) ; `--source <rtsp>` pour flux IP.
+
+Remaining:
+- M4 : tracking objets (IoU/ByteTrack), zones, franchissement directionnel,
+  deduplication d'evenements.
+- Mesure latence live avec les 2 branches actives + strategie de skip.
+- Precision detection sur corpus annote (clips consentis).
+
+## 2026-10-14 — M4a Tracking d'objets (IDs stables)
+
+Goal:
+- Transformer les detections par-frame en pistes stables avec identifiant,
+  prerequis des evenements (franchissement, zones) a venir.
+
+Changes:
+- `DetectedObject.iou()` (pur, miroir de `FaceObservation.iou`).
+- `TrackedObject` (domaine) : `track_id` + `observation` (composition, DRY).
+- `ObjectTracker` (application, pur) : association IoU greedy **meme label**,
+  IDs monotones, vieillissement/suppression des pistes absentes, `reset()`.
+- `object_overlay.draw_tracked` (`#id label score`) ; `_draw_box` factorise
+  (DRY) ; le probe garde `draw` (detections brutes, sans id).
+- `main.py` : `ObjectTracker` dans la boucle live, `reset()` sur reconnexion,
+  statut `DETECT n` base sur le nombre de pistes.
+
+Decisions:
+- Reutilise `track_iou_threshold` / `track_max_misses` (meme concept que les
+  visages) ; pas de nouvelle config tant qu'un besoin mesure ne l'impose pas.
+- Association restreinte au meme label (une voiture ne devient pas une personne).
+- Sortie = pistes vues cette frame (pas de prediction/coasting : YAGNI).
+- Un ID de piste est temporaire, PAS une identite civile (§7).
+
+Validation:
+- 154 tests OK (iou, TrackedObject, 6 scenarios tracker : id, perte, reset,
+  labels distincts, independance), ruff + mypy clean (59 fichiers).
+- Smoke headless (image reelle, 2 frames) : IDs #1-#4 stables frame->frame ;
+  overlay pistes annote la frame.
+
+Remaining:
+- M4b : zones + ligne de franchissement directionnel (hysteresis, unicite
+  d'evenement, deduplication) -> evenements horodates.
+- Mesure latence live 2 branches + strategie de skip.
+- Precision/continuite des pistes sur corpus annote (changements d'ID, pertes).
+
+## 2026-10-14 — BC `plate` : lecture de plaque (ANPR) comme les visages
+
+Goal:
+- Lire les plaques et comparer a une watchlist de plaques a surveiller (impayes),
+  en miroir du flux visages ; testable sur PC. Format generique (multi-pays).
+
+Changes:
+- Nouveau bounded context `plate` (ne recycle ni recognition ni detection) :
+  - domaine pur : `PlateNumber` (normalisation generique AB-123 -> AB123),
+    `PlateReading`, `PlateWatchlist`, `PlateReadingPolicy` -> `PlateRecognitionResult`
+    etats honnetes `WATCHED` / `SEEN` / `LOW_CONFIDENCE`.
+  - application : port `PlateReader` + `AnalyzedPlate`, use case `RecognizePlate`.
+  - infra : adapter `FastAlprPlateReader` (fast-alpr), `ocr_confidence` (pur,
+    agrege la liste par-caractere via le MIN = conservateur), loader watchlist
+    fichier texte, overlay plaque.
+- `main.py` : `--plates`, init opt-in degradable, lecture + overlay (apres alerter),
+  statut capacites combine (`DETECT n   PLATES n`) via `_capability_status`.
+- Config : `plates_enabled`, `plate_detector_model`, `plate_ocr_model`,
+  `plate_min_confidence` (valide), `plate_watchlist_path`.
+- Dependance : `fast-alpr` 0.4.0 (code MIT) ; mypy override `fast_alpr.*`.
+  Conflit cv2 resolu (desinstalle opencv-python-headless, reinstalle opencv-python).
+
+Decisions:
+- Usage = POC LOCAL sur sa propre propriete/cameras RTSP (espace prive controle).
+  Licence des POIDS non confirmee (detecteur YOLOv9/GPL) -> a revalider AVANT
+  toute distribution/vente. Ne pas inventer de licence (§13).
+- Plaque = donnee personnelle (§11) : watchlist = fichier texte local ; pas de
+  stockage auto d'inconnus ; retention a cadrer avant tout code de capture plaque.
+- Format generique (OCR `cct-xs-v2-global`), pas de regle pays stricte.
+
+Validation:
+- 170 tests OK (domaine, use case, ocr_confidence, loader), ruff + mypy clean (75).
+- Smoke reel (image plaque) : lue `5AU5341`, decision WATCHED sur watchlist,
+  box (307,187,387,210). Modeles telecharges en cache utilisateur (hors repo).
+- PERF MESUREE : ANPR ~390 ms/frame (CPU) -> ~2.5 FPS si lu a chaque frame.
+
+Remaining (justifie par la mesure):
+- Throttle ANPR (toutes N frames) ou lecture uniquement sur piste vehicule, +
+  confirmation temporelle par piste (reduire faux positifs OCR).
+- Masque/vitre teintee : reconnaissance faciale non fiable (barriere physique) ;
+  presence detectee, identite non.
+- Enrolement plaque (si besoin) ; aujourd'hui = editer data/plate_watchlist.txt.
+
+## 2026-10-14 — ANPR optimise : lecture sur piste vehicule + confirmation
+
+Goal:
+- Rendre l'ANPR utilisable en live (mesure precedente : 390 ms/frame) : lire
+  seulement les crops de pistes vehicules, throttle, confirmation par piste.
+
+Changes:
+- `VehiclePlateReader` (application, etat par piste) : recoit `(track_id, crop)`
+  (BC-clean, aucun type `detection`), reutilise `RecognizePlate` (DRY), throttle
+  `read_interval`, confirmation `confirm_count` lectures coherentes dans `window`,
+  cache du resultat confirme entre lectures, oubli des pistes absentes, `reset()`.
+- `plate_overlay.draw_on_vehicles` : libelle plaque attache a la box du vehicule
+  (coords simples) ; ancien `draw(RecognizedPlate)` supprime (plus de code mort).
+- `main.py` : `_VEHICLE_LABELS`, crop des pistes vehicules, `_read_vehicle_plates`,
+  `_plate_entries`, `reset()` sur reconnexion ; ANPR ne tourne plus sur toute la frame.
+- Config : `plate_read_interval` (5), `plate_confirm_count` (3), `plate_confirm_window`
+  (5) + validation.
+
+Decisions:
+- Plaque lue uniquement sur car/motorcycle/bus/truck (pas person/bicycle).
+- Confirmation = meme numero lu N fois sur la MEME piste vehicule avant affichage
+  (tue les faux positifs OCR ponctuels) ; resultat = lecture courante (honnete).
+- Confirmation geree dans l'application (fenetre par piste), pas de nouveau VO
+  domaine (KISS/YAGNI), testee avec un faux lecteur.
+
+Validation:
+- 175 tests OK (5 scenarios VehiclePlateReader : confirmation, throttle, cache,
+  oubli, seen-vs-watched), ruff + mypy clean (76 fichiers).
+- Preuve modele reel (read_interval=2, confirm=2) : lecture frame1/3/5, 0 ms
+  frames 2/4/6, WATCHED 5AU5341 confirme frame 3, oubli quand piste absente.
+  Cout amorti ~30 ms/frame (read_interval=5) si vehicule present, 0 sinon.
+
+Remaining:
+- Mesure latence live des 3 branches ensemble sur vraie camera.
+- Eventuel evenement horodate + dedup quand une plaque WATCHED est confirmee
+  (ex. capture/notification, en reutilisant MatchAlerter/sinks).
+
+## 2026-10-16 — ANPR auto + fiabilite-d'abord (vehicule rapide)
+
+Goal:
+- `--plates` active la detection automatiquement ; maximiser la capture d'un
+  vehicule rapide/fuyant tout en restant temps reel.
+
+Changes:
+- Politique de lecture revue dans `VehiclePlateReader` : tant qu'une piste n'est
+  PAS confirmee, lecture a CHAQUE frame pendant `plate_burst_attempts` (burst =
+  capture max dans la courte fenetre d'un vehicule rapide) ; au-dela, backoff a
+  `plate_read_interval` ; des confirmation, ARRET des lectures (cout -> 0).
+- Config : `plate_burst_attempts` (8) + validation ; garde
+  `plates_enabled requires detection_enabled`.
+- CLI : `--plates` implique la detection (`detection_enabled = detect or plates`).
+
+Decisions:
+- Fiabilite-d'abord sur pistes neuves/rapides (lecture par frame), cout borne
+  (backoff si durablement illisible, arret si confirme).
+- Limite PHYSIQUE assumee (constitution §1/§7/§8) : flou de bouge, breve
+  visibilite, obturateur/resolution/lumiere/angle camera -> aucune garantie de
+  lire une plaque rapide. Le logiciel maximise, il ne promet pas 100 %.
+
+Validation:
+- 177 tests OK (burst chaque frame, backoff, arret a la confirmation, oubli,
+  SEEN/WATCHED, garde config), ruff + mypy clean (76 fichiers).
+- Preuve modele reel (defaults burst=8/confirm=3) : lecture frames 1-2-3
+  (327/185/189 ms), WATCHED 5AU5341 confirme frame 3, 0 ms ensuite.
+
+Remaining:
+- Camera reelle : regler burst/confirm/min_confidence selon obturateur et debit.
+- Evenement horodate quand une plaque WATCHED est confirmee (reutiliser sinks).
+
+## 2026-10-16 — Alerte + capture horodatee sur plaque WATCHED
+
+Goal:
+- Declencher une capture horodatee (et email optionnel) quand une plaque de la
+  watchlist est confirmee, en miroir du flux visages, sans coupler les BC.
+
+Changes:
+- `PlateAlerter` (plate/application) : dedup par numero de plaque + cooldown,
+  declenche UNIQUEMENT sur WATCHED confirme, horloge injectee (testable).
+- `PlateSnapshotSink` + port `PlateSnapshotWriter` (plate/application) ;
+  `LocalPlateSnapshotWriter` (plate/infrastructure/capture) : crop du vehicule,
+  dossier par-plaque, fichier horodate `AAAAMMJJTHHMMSS_mmm_camera.jpg`.
+- `PlateEmailAlertSink` (bootstrap, pont vers communication).
+- `main.py` : email sender PARTAGE entre visages et plaques ; `_build_alerter`
+  scinde en `_build_face_alerter` + `_build_plate_alerter` ; alerte plaque sur
+  frame PROPRE (avant overlay) ; reutilise `--capture` / `--notify`.
+
+Decisions:
+- Alerte seulement sur WATCHED (pas SEEN) : pas de spam pour chaque voiture.
+- Dedup par numero de plaque (pas par piste) : une plaque ne re-alerte pas avant
+  `capture_cooldown_seconds`, meme si re-detectee.
+- Captures plaques sous `capture_dir/plates/<plaque>/` (separe des visages).
+- Sinks plaques distincts des sinks visages (BC-clean) ; seul `communication`
+  (EmailSender) est mutualise, via le composition root.
+
+Validation:
+- 182 tests OK (PlateAlerter: WATCHED/SEEN/cooldown/apres-cooldown ;
+  LocalPlateSnapshotWriter), ruff + mypy clean (81 fichiers).
+- Preuve end-to-end : WATCHED 5AU5341 -> snapshot
+  plates/5AU5341/<stamp>_jardin.jpg ; 2e appel debounce -> 1 seul fichier.
+
+Remaining:
+- Camera reelle : regler cooldown/retention ; politique de purge des captures.
+- Option : joindre l'image de la plaque a l'email (aujourd'hui texte seul).
+
+## 2026-10-16 — Notifications push : chaine generique + WhatsApp Cloud API
+
+Goal:
+- Alerter l'operateur absent via push telephone, canal interchangeable (OCP),
+  WhatsApp Cloud officiel en premier, Telegram trivial a ajouter ensuite.
+
+Changes:
+- communication/domain : `Alert` + `AlertImage` (purs, valides).
+- communication/application : port `AlertNotifier` + `NotificationError`.
+- communication/infrastructure :
+  - `http_client` : port `HttpClient` + `UrllibHttpClient` (stdlib, multipart
+    encode a la main) = transport HTTP GENERIQUE reutilise par tous les canaux.
+  - `WhatsAppCloudChannel` (depend du port HttpClient -> testable sans reseau) :
+    upload media puis message image+caption, ou texte seul ; `WhatsAppSettings.from_env`.
+  - `HttpWebhookChannel` : POST JSON {title, body, image_base64} vers une URL (ntfy/Slack/custom).
+  - `CompositeNotifier` (fan-out multi-canaux) ; `BackgroundNotifier` (file + thread,
+    non bloquant, retry/log — miroir de BackgroundEmailSender).
+- bootstrap : `NotifyingMatchSink` + `NotifyingPlateSink` (evenement -> Alert ->
+  notifier) ; `image_jpeg.encode_jpeg` partage (DRY : email plaque refactore dessus).
+- config : `whatsapp_enabled`, `webhook_url`. CLI : `--whatsapp`, `--webhook URL`.
+  Email sender ET notifier fermes proprement en fin de run.
+
+Decisions:
+- Le canal d'alerte = un AlertNotifier derriere la meme file resiliente -> ajouter
+  Telegram = un seul fichier, zero changement ailleurs (OCP/DIP).
+- Email (SMTP) laisse tel quel (transport different) ; seuls les NOUVEAUX canaux
+  HTTP partagent Alert/AlertNotifier/HttpClient.
+- WhatsAppCloudChannel teste via faux HttpClient (texte, image 2-etapes, erreurs).
+
+Validation:
+- 205 tests OK, ruff + mypy clean (93 fichiers).
+
+LIMITE IMPORTANTE (WhatsApp Cloud API):
+- L'envoi FORME LIBRE (texte/image) n'est accepte par Meta que dans la fenetre
+  de 24 h apres un message entrant du destinataire. Hors fenetre, Meta EXIGE un
+  message "template" pre-approuve. L'implementation actuelle envoie en forme
+  libre -> fiable si le destinataire a ecrit au numero business recemment, sinon
+  il faudra ajouter le support des templates (TODO si besoin always-on).
+
+DETTE TECHNIQUE (WhatsApp) — a date 2026-10-16 :
+- Creation de l'app Meta + recuperation token/phone_id EN COURS (cote utilisateur).
+- Envoi reel via l'API Cloud JAMAIS teste contre Meta (seulement via faux HttpClient).
+- Forme libre limitee a la fenetre 24 h -> templates requis pour always-on : NON fait.
+- File d'alertes en memoire : perdue si l'appli redemarre (pas de persistance).
+
+Remaining:
+- Telegram channel (meme port AlertNotifier).
+- Option templates WhatsApp pour push always-on hors fenetre 24 h.
+
+## 2026-10-16 — Image jointe a l'email + purge/retention des captures
+
+Goal:
+- (a) Joindre l'image de la plaque a l'email d'alerte. (b) Purger
+  automatiquement les captures au-dela d'une duree de retention.
+
+Changes (a) piece jointe:
+- `EmailAttachment` (communication/domain, pur : filename, content_type,
+  content bytes + validation ; proprietes maintype/subtype).
+- `EmailMessage.attachments` (tuple, defaut vide -> texte seul inchange, OCP).
+- `build_mime` ajoute chaque piece via `add_attachment`.
+- `PlateEmailAlertSink` : crop vehicule -> `cv2.imencode` JPEG -> EmailAttachment.
+- `image_crop.crop_box` partage par le writer de capture ET l'email (DRY).
+
+Changes (b) retention:
+- `CaptureRetention` (bootstrap) : `purge()` supprime les fichiers plus vieux
+  que `max_age_seconds` sous `capture_dir` ; predicat pur `is_expired`, horloge
+  injectee (testable).
+- Config `capture_retention_seconds` (0 = desactive) + validation.
+- `main.py` : purge au demarrage de session + periodique (toutes 300 s) via
+  `_purge` / `_purge_if_due` ; actif seulement si capture activee et retention>0.
+
+Decisions:
+- EmailAttachment leve ValueError (pas d'import vers email_message) -> aucun
+  cycle d'import dans le domaine.
+- Purge throttlee (pas chaque frame) ; empty dirs laisses (YAGNI).
+- Retention desactivee par defaut (0) : on ne supprime jamais les donnees de
+  l'utilisateur sans choix explicite ; recommander une valeur en prod (§11).
+
+Validation:
+- 191 tests OK (EmailAttachment, build_mime texte/piece jointe, is_expired,
+  purge selon mtime, root absent), ruff + mypy clean (84 fichiers).
+- Preuve : email WATCHED 5AU5341 porte plate_5AU5341.jpg (image/jpeg, 2245 o) ;
+  purge supprime le vieux fichier et garde le recent.
+
+Remaining:
+- Camera reelle : calibrer retention/cooldown et mesurer latence live.
+
 ------------------------------------------------------------------------
 
 # 38. Handoff Update Checklist
