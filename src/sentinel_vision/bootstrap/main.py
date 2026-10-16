@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import signal
+import threading
 import time
 import warnings
 from dataclasses import replace
@@ -10,6 +12,7 @@ import cv2
 import numpy as np
 
 from sentinel_vision.bootstrap.capture_retention import CaptureRetention
+from sentinel_vision.bootstrap.config_file import ConfigFileError, load_app_config
 from sentinel_vision.bootstrap.email_alert_sink import EmailAlertSink
 from sentinel_vision.bootstrap.frame_source import (
     CameraError,
@@ -180,9 +183,12 @@ def _run_live_session(
     object_tracker = ObjectTracker(config.track_iou_threshold, config.track_max_misses)
     retention = _build_retention(config)
     last_purge = _purge(retention, time.perf_counter())
+    display = not config.headless
+    stop = None if display else _install_stop()
     with open_frame_source(config) as camera:
         reconnects = camera.reconnect_count
-        cv2.namedWindow(config.window_title, cv2.WINDOW_NORMAL)
+        if display:
+            cv2.namedWindow(config.window_title, cv2.WINDOW_NORMAL)
         while True:
             start = time.perf_counter()
             last_purge = _purge_if_due(retention, start, last_purge)
@@ -205,18 +211,20 @@ def _run_live_session(
                     alerter.process(frame, list(outcome.faces))
             if plate_alerter is not None:
                 plate_alerter.process(frame, plate_entries)
-            object_overlay.draw_tracked(frame, tracked)
-            plate_overlay.draw_on_vehicles(frame, plate_entries)
-            status = _capability_status(
-                _object_status(config.detection_enabled, detector, detection_ok, len(tracked)),
-                _plate_status(config.plates_enabled, plate_reader, plates_ok, len(plate_results)),
-            )
-            overlay.render(frame, outcome, fps, watchlist_size, camera_label, provider_label, status)
-            cv2.imshow(config.window_title, frame)
-
-            if cv2.waitKey(1) & 0xFF in _QUIT_KEYS:
-                return
-            if cv2.getWindowProperty(config.window_title, cv2.WND_PROP_VISIBLE) < 1:
+            if display:
+                object_overlay.draw_tracked(frame, tracked)
+                plate_overlay.draw_on_vehicles(frame, plate_entries)
+                status = _capability_status(
+                    _object_status(config.detection_enabled, detector, detection_ok, len(tracked)),
+                    _plate_status(config.plates_enabled, plate_reader, plates_ok, len(plate_results)),
+                )
+                overlay.render(frame, outcome, fps, watchlist_size, camera_label, provider_label, status)
+                cv2.imshow(config.window_title, frame)
+                if cv2.waitKey(1) & 0xFF in _QUIT_KEYS:
+                    return
+                if cv2.getWindowProperty(config.window_title, cv2.WND_PROP_VISIBLE) < 1:
+                    return
+            elif stop is not None and stop.is_set():
                 return
 
             elapsed = time.perf_counter() - start
@@ -403,6 +411,17 @@ def _provider_label(config: AppConfig) -> str:
     return config.providers[0].removesuffix("ExecutionProvider").upper()
 
 
+def _install_stop() -> threading.Event:
+    stop = threading.Event()
+
+    def _handle(*_: object) -> None:
+        stop.set()
+
+    signal.signal(signal.SIGINT, _handle)
+    signal.signal(signal.SIGTERM, _handle)
+    return stop
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="sentinel-vision")
     parser.add_argument("--camera", type=int, help="camera index (default 0)")
@@ -425,20 +444,26 @@ def main() -> None:
         "--whatsapp", action="store_true", help="push alerts via WhatsApp Cloud API (env config)"
     )
     parser.add_argument("--webhook", help="push alerts as JSON POST to this URL")
-    arguments = parser.parse_args()
-    config = resolve_camera_config(AppConfig(), arguments.camera, arguments.source)
-    config = replace(
-        config,
-        capture_enabled=arguments.capture,
-        notify_enabled=arguments.notify,
-        detection_enabled=arguments.detect or arguments.plates,
-        plates_enabled=arguments.plates,
-        whatsapp_enabled=arguments.whatsapp,
-        webhook_url=arguments.webhook or "",
+    parser.add_argument("--config", help="path to a JSON config file (per-camera deployment)")
+    parser.add_argument(
+        "--headless", action="store_true", help="run without a video window (servers/VPS)"
     )
+    arguments = parser.parse_args()
     try:
+        base = load_app_config(Path(arguments.config)) if arguments.config else AppConfig()
+        config = resolve_camera_config(base, arguments.camera, arguments.source)
+        config = replace(
+            config,
+            capture_enabled=base.capture_enabled or arguments.capture,
+            notify_enabled=base.notify_enabled or arguments.notify,
+            detection_enabled=base.detection_enabled or arguments.detect or arguments.plates,
+            plates_enabled=base.plates_enabled or arguments.plates,
+            whatsapp_enabled=base.whatsapp_enabled or arguments.whatsapp,
+            webhook_url=arguments.webhook or base.webhook_url,
+            headless=base.headless or arguments.headless,
+        )
         run(config)
-    except (WatchlistLoadError, MailSettingsError, WhatsAppSettingsError) as error:
+    except (ConfigFileError, WatchlistLoadError, MailSettingsError, WhatsAppSettingsError) as error:
         print(f"Sentinel Vision could not start: {error}")
         raise SystemExit(1) from error
     except KeyboardInterrupt:

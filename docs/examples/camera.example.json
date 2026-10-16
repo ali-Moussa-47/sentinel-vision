@@ -1,0 +1,15 @@
+{
+  "camera_url": "rtsp://user:password@192.168.1.50:554/stream1",
+  "camera_name": "portail-entree",
+  "detection_enabled": true,
+  "plates_enabled": true,
+  "capture_enabled": true,
+  "capture_dir": "data/captures",
+  "capture_retention_seconds": 604800,
+  "plate_watchlist_path": "data/plate_watchlist.txt",
+  "plate_min_confidence": 0.6,
+  "plate_confirm_count": 3,
+  "notify_enabled": false,
+  "whatsapp_enabled": false,
+  "webhook_url": ""
+}

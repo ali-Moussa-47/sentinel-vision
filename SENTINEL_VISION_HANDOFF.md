@@ -1799,6 +1799,65 @@ Remaining:
 - Camera reelle : regler cooldown/retention ; politique de purge des captures.
 - Option : joindre l'image de la plaque a l'email (aujourd'hui texte seul).
 
+## 2026-10-16 — Strict minimum deploiement : mode headless + recette systemd
+
+Goal:
+- Rendre l'app deployable 24/7 sur VPS SANS ecran, avec redemarrage auto.
+  (Logs structures juges NON necessaires : journald capture deja stdout.)
+
+Changes:
+- Config `headless` (+ CLI `--headless`). En headless : aucune fenetre OpenCV,
+  dessin des overlays saute (inutile), boucle arretee par SIGINT/SIGTERM via
+  `_install_stop()` -> arret PROPRE (camera relachee, files d'alertes videes).
+  Alertes/captures tournent normalement (sur frame propre, avant tout dessin).
+- `docs/DEPLOYMENT.md` : install, 1 fichier config/camera, `--headless`, unite
+  systemd `Restart=always`, logs via `journalctl`, modele flotte (1 service/camera).
+
+Decisions:
+- La fenetre OpenCV etait OBLIGATOIRE -> bloquait tout deploiement serveur. Corrige.
+- Minimum reel pour un deploiement fiable = headless + restart auto (systemd) +
+  journald. Docker/logs structures/historique = confort, repousses (LIMITATIONS).
+
+Validation:
+- 211 tests OK, ruff + mypy clean (94 fichiers). (Boucle headless = chemin
+  materiel, non couvert par les tests unitaires.)
+
+## 2026-10-16 — Cap deploiement flotte : limites documentees + config fichier
+
+Goal:
+- Rendre l'app deployable sur une flotte (milliers de cameras / N serveurs) SANS
+  reecriture distribuee ; documenter honnetement toutes les limites.
+
+Decision d'architecture (ADR-010):
+- Echelle = REPLICATION partage-de-rien : 1 instance = 1 (ou quelques) camera(s),
+  configuree par FICHIER ; des milliers de cameras = des milliers d'instances sur
+  N serveurs, chacune autonome. PAS de process multi-flux, PAS d'orchestrateur /
+  DB / API centrale (YAGNI jusqu'a preuve de besoin). Orchestration deleguee a
+  systemd/Docker/K8s.
+
+Changes:
+- `docs/LIMITATIONS.md` : limites PHYSIQUE / NON VALIDE / NON IMPLEMENTE / DETTE
+  pour reco, detection, plaque, notifications, perf/echelle, exploitation, privacy.
+- `docs/adr/ADR-010-modele-deploiement-echelle.md`.
+- `bootstrap/config_file.load_app_config` : charge un AppConfig depuis un JSON
+  (strict : cles inconnues rejetees ; listes -> tuples ; validation via __post_init__).
+- `main.py` : option `--config fichier.json` (base declarative) ; les drapeaux CLI
+  s'AJOUTENT (OR) et ne desactivent jamais ce que le fichier a active.
+- `docs/examples/camera.example.json` (gabarit par camera).
+
+DETTES TECHNIQUES actees (dependent d'elements externes) :
+- Test sur vrai RTSP ; deploiement VPS Hostinger ; setup reel WhatsApp/Telegram.
+
+Validation:
+- 211 tests OK (loader : overrides, tuples, cle inconnue, valeur invalide, garde
+  plates->detection, JSON malforme), ruff + mypy clean (94 fichiers).
+- camera.example.json charge et valide.
+
+Backlog de finalisation ORDONNE (sans materiel, prochaine etapes) :
+  P1 logs structures -> P2 packaging Docker + mode service -> P3 confirmation
+  plaque robuste (vote majoritaire) -> P4 historique d'evenements persistant
+  (JSONL par instance) -> P5 feedback qualite a l'enrolement visage -> P6 Telegram.
+
 ## 2026-10-16 — Notifications push : chaine generique + WhatsApp Cloud API
 
 Goal:

@@ -57,6 +57,7 @@ class AppConfig:
 
     providers: tuple[str, ...] = ("CPUExecutionProvider",)
     window_title: str = "Sentinel Vision"
+    headless: bool = False
 
     def __post_init__(self) -> None:
         if self.camera_index < 0:
